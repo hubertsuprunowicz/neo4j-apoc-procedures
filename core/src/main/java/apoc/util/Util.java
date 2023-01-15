@@ -5,21 +5,12 @@ import apoc.convert.Convert;
 import apoc.export.util.CountingInputStream;
 import apoc.result.VirtualNode;
 import apoc.result.VirtualRelationship;
+import net.jpountz.lz4.LZ4FrameInputStream;
 import org.apache.commons.io.IOUtils;
-import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringUtils;
 import org.eclipse.collections.api.iterator.LongIterator;
-import org.neo4j.graphdb.Direction;
-import org.neo4j.graphdb.Entity;
-import org.neo4j.graphdb.GraphDatabaseService;
-import org.neo4j.graphdb.Label;
 import org.neo4j.graphdb.Node;
-import org.neo4j.graphdb.NotInTransactionException;
-import org.neo4j.graphdb.QueryExecutionException;
-import org.neo4j.graphdb.Relationship;
-import org.neo4j.graphdb.RelationshipType;
-import org.neo4j.graphdb.ResourceIterator;
-import org.neo4j.graphdb.Transaction;
-import org.neo4j.graphdb.TransactionTerminatedException;
+import org.neo4j.graphdb.*;
 import org.neo4j.internal.helpers.collection.Iterators;
 import org.neo4j.internal.helpers.collection.Pair;
 import org.neo4j.internal.kernel.api.procs.ProcedureCallContext;
@@ -29,45 +20,14 @@ import org.neo4j.logging.Log;
 import org.neo4j.procedure.TerminationGuard;
 
 import javax.lang.model.SourceVersion;
-import java.io.BufferedWriter;
-import java.io.ByteArrayInputStream;
-import java.io.Closeable;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStreamWriter;
-import java.io.UnsupportedEncodingException;
+import java.io.*;
 import java.lang.reflect.InvocationTargetException;
 import java.math.BigInteger;
-import java.net.HttpURLConnection;
-import java.net.MalformedURLException;
-import java.net.URI;
-import java.net.URL;
-import java.net.URLConnection;
-import java.net.URLEncoder;
+import java.net.*;
 import java.time.Duration;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.TemporalAccessor;
-import java.util.AbstractMap;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Base64;
-import java.util.Collection;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.ListIterator;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Optional;
-import java.util.PrimitiveIterator;
-import java.util.Scanner;
-import java.util.Set;
-import java.util.Spliterator;
-import java.util.Spliterators;
+import java.util.*;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -75,19 +35,16 @@ import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.function.Function;
-import java.util.stream.Collectors;
-import java.util.stream.IntStream;
-import java.util.stream.LongStream;
-import java.util.stream.Stream;
-import java.util.stream.StreamSupport;
-import java.util.zip.DeflaterInputStream;
-import java.util.zip.GZIPInputStream;
+import java.util.stream.*;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
 import static apoc.ApocConfig.apocConfig;
+import static apoc.export.cypher.formatter.CypherFormatterUtils.formatProperties;
+import static apoc.export.cypher.formatter.CypherFormatterUtils.formatToString;
 import static apoc.util.DateFormatUtil.getOrCreate;
 import static java.lang.String.format;
+import static org.eclipse.jetty.util.URIUtil.encodePath;
 
 /**
  * @author mh
@@ -106,23 +63,26 @@ public class Util {
     public static String labelString(Node n) {
         return joinLabels(n.getLabels(), ":");
     }
+
     public static String joinLabels(Iterable<Label> labels, String s) {
         return StreamSupport.stream(labels.spliterator(), false).map(Label::name).collect(Collectors.joining(s));
     }
+
     public static List<String> labelStrings(Node n) {
-        return StreamSupport.stream(n.getLabels().spliterator(),false).map(Label::name).sorted().collect(Collectors.toList());
+        return StreamSupport.stream(n.getLabels().spliterator(), false).map(Label::name).sorted().collect(Collectors.toList());
     }
+
     public static Label[] labels(Object labelNames) {
-        if (labelNames==null) return NO_LABELS;
+        if (labelNames == null) return NO_LABELS;
         if (labelNames instanceof List) {
             Set names = new LinkedHashSet((List) labelNames); // Removing duplicates
             Label[] labels = new Label[names.size()];
             int i = 0;
             for (Object l : names) {
-                if (l==null) continue;
+                if (l == null) continue;
                 labels[i++] = Label.label(l.toString());
             }
-            if (i <= labels.length) return Arrays.copyOf(labels,i);
+            if (i <= labels.length) return Arrays.copyOf(labels, i);
             return labels;
         }
         return new Label[]{Label.label(labelNames.toString())};
@@ -136,18 +96,18 @@ public class Util {
     @SuppressWarnings("unchecked")
     public static LongStream ids(Object ids) {
         if (ids == null) return LongStream.empty();
-        if (ids instanceof Number) return LongStream.of(((Number)ids).longValue());
-        if (ids instanceof Node) return LongStream.of(((Node)ids).getId());
-        if (ids instanceof Relationship) return LongStream.of(((Relationship)ids).getId());
+        if (ids instanceof Number) return LongStream.of(((Number) ids).longValue());
+        if (ids instanceof Node) return LongStream.of(((Node) ids).getId());
+        if (ids instanceof Relationship) return LongStream.of(((Relationship) ids).getId());
         if (ids instanceof Collection) {
             Collection<Object> coll = (Collection<Object>) ids;
-            return coll.stream().mapToLong( (o) -> ((Number)o).longValue());
+            return coll.stream().mapToLong((o) -> ((Number) o).longValue());
         }
         if (ids instanceof Iterable) {
             Spliterator<Object> spliterator = ((Iterable) ids).spliterator();
-            return StreamSupport.stream(spliterator,false).mapToLong( (o) -> ((Number)o).longValue());
+            return StreamSupport.stream(spliterator, false).mapToLong((o) -> ((Number) o).longValue());
         }
-        throw new RuntimeException("Can't convert "+ids.getClass()+" to a stream of long ids");
+        throw new RuntimeException("Can't convert " + ids.getClass() + " to a stream of long ids");
     }
 
     public static Stream<Object> stream(Object values) {
@@ -159,9 +119,9 @@ public class Util {
     }
 
     public static Node node(Transaction tx, Object id) {
-        if (id instanceof Node) return rebind(tx, (Node)id);
-        if (id instanceof Number) return tx.getNodeById(((Number)id).longValue());
-        throw new RuntimeException("Can't convert "+id.getClass()+" to a Node");
+        if (id instanceof Node) return rebind(tx, (Node) id);
+        if (id instanceof Number) return tx.getNodeById(((Number) id).longValue());
+        throw new RuntimeException("Can't convert " + id.getClass() + " to a Node");
     }
 
     public static Stream<Relationship> relsStream(Transaction tx, Object ids) {
@@ -169,9 +129,9 @@ public class Util {
     }
 
     public static Relationship relationship(Transaction tx, Object id) {
-        if (id instanceof Relationship) return rebind(tx, (Relationship)id);
-        if (id instanceof Number) return tx.getRelationshipById(((Number)id).longValue());
-        throw new RuntimeException("Can't convert "+id.getClass()+" to a Relationship");
+        if (id instanceof Relationship) return rebind(tx, (Relationship) id);
+        if (id instanceof Number) return tx.getRelationshipById(((Number) id).longValue());
+        throw new RuntimeException("Can't convert " + id.getClass() + " to a Relationship");
     }
 
     public static double doubleValue(Entity pc, String prop, Number defaultValue) {
@@ -210,7 +170,7 @@ public class Util {
             return result;
         } catch (Exception e) {
             if (retry >= maxRetries) throw e;
-            if (log!=null) {
+            if (log != null) {
                 log.warn("Retrying operation %d of %d", retry, maxRetries);
             }
             callbackForRetry.accept(retry);
@@ -240,7 +200,9 @@ public class Util {
     }
 
     public static <T> Future<T> inTxFuture(ExecutorService pool, GraphDatabaseService db, Function<Transaction, T> function) {
-        return inTxFuture(null, pool, db, function, 0, _ignored -> {}, _ignored -> {});
+        return inTxFuture(null, pool, db, function, 0, _ignored -> {
+        }, _ignored -> {
+        });
     }
 
     public static <T> T inTx(GraphDatabaseService db, Pools pools, Function<Transaction, T> function) {
@@ -250,7 +212,7 @@ public class Util {
             throw e;
         } catch (Exception e) {
             // TODO: consider dropping the exception to logs
-            throw new RuntimeException("Error executing in separate transaction: "+e.getMessage(), e);
+            throw new RuntimeException("Error executing in separate transaction: " + e.getMessage(), e);
         }
     }
 
@@ -258,7 +220,7 @@ public class Util {
         try {
             return inFuture(pools, callable).get();
         } catch (Exception e) {
-            throw new RuntimeException("Error executing in separate thread: "+e.getMessage(), e);
+            throw new RuntimeException("Error executing in separate thread: " + e.getMessage(), e);
         }
     }
 
@@ -270,9 +232,9 @@ public class Util {
         if (value == null) return null;
         if (value instanceof Number) return ((Number) value).doubleValue();
         try {
-        	return Double.parseDouble(value.toString());
+            return Double.parseDouble(value.toString());
         } catch (NumberFormatException e) {
-        	return null;
+            return null;
         }
     }
 
@@ -289,25 +251,26 @@ public class Util {
     }
 
     public static Long toLong(Object value) {
-    	if (value == null) return null;
-        if (value instanceof Number) return ((Number)value).longValue();
+        if (value == null) return null;
+        if (value instanceof Number) return ((Number) value).longValue();
         try {
             String s = value.toString();
-            if (s.contains(".")) return (long)Double.parseDouble(s);
+            if (s.contains(".")) return (long) Double.parseDouble(s);
             return Long.parseLong(s);
         } catch (NumberFormatException e) {
-        	return null;
+            return null;
         }
     }
+
     public static Integer toInteger(Object value) {
-    	if (value == null) return null;
-        if (value instanceof Number) return ((Number)value).intValue();
+        if (value == null) return null;
+        if (value instanceof Number) return ((Number) value).intValue();
         try {
             String s = value.toString();
-            if (s.contains(".")) return (int)Double.parseDouble(s);
-        	return Integer.parseInt(value.toString());
+            if (s.contains(".")) return (int) Double.parseDouble(s);
+            return Integer.parseInt(value.toString());
         } catch (NumberFormatException e) {
-        	return null;
+            return null;
         }
     }
 
@@ -320,14 +283,14 @@ public class Util {
             if (method != null && con instanceof HttpURLConnection) {
                 HttpURLConnection http = (HttpURLConnection) con;
                 http.setRequestMethod(method.toString());
-                http.setChunkedStreamingMode(1024*1024);
+                http.setChunkedStreamingMode(1024 * 1024);
                 http.setInstanceFollowRedirects(true);
             }
-            headers.forEach((k,v) -> con.setRequestProperty(k, v == null ? "" : v.toString()));
+            headers.forEach((k, v) -> con.setRequestProperty(k, v == null ? "" : v.toString()));
         }
 //        con.setDoInput(true);
-        con.setConnectTimeout(apocConfig().getInt("apoc.http.timeout.connect",10_000));
-        con.setReadTimeout(apocConfig().getInt("apoc.http.timeout.read",60_000));
+        con.setConnectTimeout(apocConfig().getInt("apoc.http.timeout.connect", 10_000));
+        con.setReadTimeout(apocConfig().getInt("apoc.http.timeout.read", 60_000));
         return con;
     }
 
@@ -348,26 +311,43 @@ public class Util {
     private static void writePayload(URLConnection con, String payload) throws IOException {
         if (payload == null) return;
         con.setDoOutput(true);
-        BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(con.getOutputStream(),"UTF-8"));
+        BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(con.getOutputStream(), "UTF-8"));
         writer.write(payload);
         writer.close();
     }
 
     private static String handleRedirect(URLConnection con, String url) throws IOException {
-       if (!(con instanceof HttpURLConnection)) return url;
-       if (!isRedirect(((HttpURLConnection)con))) return url;
-       return con.getHeaderField("Location");
+        if (!(con instanceof HttpURLConnection)) return url;
+        if (!isRedirect(((HttpURLConnection) con))) return url;
+        return con.getHeaderField("Location");
     }
 
     public static CountingInputStream openInputStream(String urlAddress, Map<String, Object> headers, String payload) throws IOException {
-        StreamConnection sc;
-        InputStream stream;
         if (urlAddress.contains("!") && (urlAddress.contains(".zip") || urlAddress.contains(".tar") || urlAddress.contains(".tgz"))) {
             return getStreamCompressedFile(urlAddress, headers, payload);
         }
+        if (urlAddress.contains(".lz4")) {
+            return getStreamDecompressedLZ4File(urlAddress, headers, payload);
+        }
+        StreamConnection sc = getStreamConnection(urlAddress, headers, payload);
+        return sc.toCountingInputStream();
+    }
 
-        sc = getStreamConnection(urlAddress, headers, payload);
-        stream = getInputStream(sc, urlAddress);
+    public static byte[] decompressLz4File(InputStream compressedStream) {
+        try (
+                BufferedInputStream in = new BufferedInputStream(compressedStream);
+                LZ4FrameInputStream zIn = new LZ4FrameInputStream(in)
+        ) {
+            return zIn.readAllBytes();
+        } catch (Exception e) {
+            return new byte[]{};
+        }
+    }
+
+    private static CountingInputStream getStreamDecompressedLZ4File(String urlAddress, Map<String, Object> headers, String payload) throws IOException {
+        StreamConnection sc = getStreamConnection(urlAddress, headers, payload);
+        byte[] decompressedLZ4 = decompressLz4File(sc.getInputStream());
+        InputStream stream = new ByteArrayInputStream(decompressedLZ4);
 
         return new CountingInputStream(stream, sc.getLength());
     }
@@ -378,40 +358,20 @@ public class Util {
         String[] tokens = urlAddress.split("!");
         urlAddress = tokens[0];
         String zipFileName;
-        if(tokens.length == 2) {
+        if (tokens.length == 2) {
             zipFileName = tokens[1];
             sc = getStreamConnection(urlAddress, headers, payload);
             stream = getFileStreamIntoCompressedFile(sc.getInputStream(), zipFileName);
-        }else
+        } else
             throw new IllegalArgumentException("filename can't be null or empty");
 
         return new CountingInputStream(stream, sc.getLength());
     }
 
     private static StreamConnection getStreamConnection(String urlAddress, Map<String, Object> headers, String payload) throws IOException {
-        URL url = new URL(urlAddress);
-        String protocol = url.getProtocol();
-        if (FileUtils.S3_PROTOCOL.equalsIgnoreCase(protocol)) {
-            return FileUtils.openS3InputStream(url);
-        } else if (FileUtils.HDFS_PROTOCOL.equalsIgnoreCase(protocol)) {
-            return FileUtils.openHdfsInputStream(url);
-        } else {
-            return readHttpInputStream(urlAddress, headers, payload);
-        }
-    }
-
-    private static InputStream getInputStream(StreamConnection sc, String urlAddress) throws IOException {
-        InputStream stream = sc.getInputStream();
-        String encoding = sc.getEncoding();
-
-        if ("gzip".equals(encoding) || urlAddress.endsWith(".gz")) {
-             return new GZIPInputStream(stream);
-        }
-        if ("deflate".equals(encoding)) {
-            return new DeflaterInputStream(stream);
-        }
-
-        return stream;
+        return FileUtils.SupportedProtocols
+                .from(urlAddress)
+                .getStreamConnection(urlAddress, headers, payload);
     }
 
     private static InputStream getFileStreamIntoCompressedFile(InputStream is, String fileName) throws IOException {
@@ -428,7 +388,7 @@ public class Util {
         return null;
     }
 
-    private static StreamConnection readHttpInputStream(String urlAddress, Map<String, Object> headers, String payload) throws IOException {
+    public static StreamConnection readHttpInputStream(String urlAddress, Map<String, Object> headers, String payload) throws IOException {
         URLConnection con = openUrlConnection(urlAddress, headers);
         writePayload(con, payload);
         String newUrl = handleRedirect(con, urlAddress);
@@ -441,7 +401,7 @@ public class Util {
     }
 
     public static boolean toBoolean(Object value) {
-        if ((value == null || value instanceof Number && (((Number) value).longValue()) == 0L || value instanceof String && (value.equals("") || ((String) value).equalsIgnoreCase("false") || ((String) value).equalsIgnoreCase("no")|| ((String) value).equalsIgnoreCase("0"))|| value instanceof Boolean && value.equals(false))) {
+        if ((value == null || value instanceof Number && (((Number) value).longValue()) == 0L || value instanceof String && (value.equals("") || ((String) value).equalsIgnoreCase("false") || ((String) value).equalsIgnoreCase("no") || ((String) value).equalsIgnoreCase("0")) || value instanceof Boolean && value.equals(false))) {
             return false;
         }
         return true;
@@ -449,7 +409,7 @@ public class Util {
 
     public static String encodeUrlComponent(String value) {
         try {
-            return URLEncoder.encode(value,"UTF-8");
+            return URLEncoder.encode(value, "UTF-8");
         } catch (UnsupportedEncodingException e) {
             throw new RuntimeException("Unsupported character set utf-8");
         }
@@ -459,43 +419,46 @@ public class Util {
         try {
             return JsonUtil.OBJECT_MAPPER.writeValueAsString(value);
         } catch (IOException e) {
-            throw new RuntimeException("Can't convert "+value+" to JSON");
+            throw new RuntimeException("Can't convert " + value + " to JSON");
         }
     }
+
     public static <T> T fromJson(String value, Class<T> type) {
         try {
-            return JsonUtil.OBJECT_MAPPER.readValue(value,type);
+            return JsonUtil.OBJECT_MAPPER.readValue(value, type);
         } catch (IOException e) {
-            throw new RuntimeException("Can't convert "+value+" from JSON");
+            throw new RuntimeException("Can't convert " + value + " from JSON");
         }
     }
 
     public static Stream<List<Object>> partitionSubList(List<Object> data, int partitions) {
-        return partitionSubList(data,partitions,null);
+        return partitionSubList(data, partitions, null);
     }
+
     public static Stream<List<Object>> partitionSubList(List<Object> data, int partitions, List<Object> tombstone) {
-        if (partitions==0) partitions=1;
+        if (partitions == 0) partitions = 1;
         List<Object> list = new ArrayList<>(data);
         int total = list.size();
-        int batchSize = Math.max((int)Math.ceil((double)total / partitions),1);
+        int batchSize = Math.max((int) Math.ceil((double) total / partitions), 1);
         Stream<List<Object>> stream = IntStream.range(0, partitions).parallel()
                 .mapToObj((part) -> list.subList(Math.min(part * batchSize, total), Math.min((part + 1) * batchSize, total)))
                 .filter(partition -> !partition.isEmpty());
-        return tombstone == null ? stream : Stream.concat(stream,Stream.of(tombstone));
+        return tombstone == null ? stream : Stream.concat(stream, Stream.of(tombstone));
     }
 
     public static Long runNumericQuery(Transaction tx, String query, Map<String, Object> params) {
         if (params == null) params = Collections.emptyMap();
-        try (ResourceIterator<Long> it = tx.execute(query,params).<Long>columnAs("result")) {
+        try (ResourceIterator<Long> it = tx.execute(query, params).<Long>columnAs("result")) {
             return it.next();
         }
     }
 
     public static long nodeCount(Transaction tx) {
-        return runNumericQuery(tx,NODE_COUNT,null);
+        return runNumericQuery(tx, NODE_COUNT, null);
     }
+
     public static long relCount(Transaction tx) {
-        return runNumericQuery(tx,REL_COUNT,null);
+        return runNumericQuery(tx, REL_COUNT, null);
     }
 
     public static LongStream toLongStream(LongIterator it) {
@@ -522,11 +485,11 @@ public class Util {
     }
 
     @SuppressWarnings("unchecked")
-    public static Map<String,Object> readMap(String value) {
+    public static Map<String, Object> readMap(String value) {
         try {
             return JsonUtil.OBJECT_MAPPER.readValue(value, Map.class);
         } catch (IOException e) {
-            throw new RuntimeException("Couldn't read as JSON "+value);
+            throw new RuntimeException("Couldn't read as JSON " + value);
         }
     }
 
@@ -541,16 +504,16 @@ public class Util {
     public static Map<String, Object> merge(Map<String, Object> first, Map<String, Object> second) {
         if (second == null || second.isEmpty()) return first == null ? Collections.EMPTY_MAP : first;
         if (first == null || first.isEmpty()) return second == null ? Collections.EMPTY_MAP : second;
-        Map<String,Object> combined = new HashMap<>(first);
+        Map<String, Object> combined = new HashMap<>(first);
         combined.putAll(second);
         return combined;
     }
 
-    public static <T> Map<String, T> map(T ... values) {
+    public static <T> Map<String, T> map(T... values) {
         Map<String, T> map = new LinkedHashMap<>();
-        for (int i = 0; i < values.length; i+=2) {
+        for (int i = 0; i < values.length; i += 2) {
             if (values[i] == null) continue;
-            map.put(values[i].toString(),values[i+1]);
+            map.put(values[i].toString(), values[i + 1]);
         }
         return map;
     }
@@ -566,11 +529,11 @@ public class Util {
         return res;
     }
 
-    public static <T,R> List<R> map(Stream<T> stream, Function<T,R> mapper) {
+    public static <T, R> List<R> map(Stream<T> stream, Function<T, R> mapper) {
         return stream.map(mapper).collect(Collectors.toList());
     }
 
-    public static <T,R> List<R> map(Collection<T> collection, Function<T,R> mapper) {
+    public static <T, R> List<R> map(Collection<T> collection, Function<T, R> mapper) {
         return map(collection.stream(), mapper);
     }
 
@@ -578,24 +541,24 @@ public class Util {
         if (keys == null || values == null || keys.size() != values.size())
             throw new RuntimeException("keys and values lists have to be not null and of same size");
         if (keys.isEmpty()) return Collections.emptyMap();
-        if (keys.size()==1) return Collections.singletonMap(keys.get(0),values.get(0));
+        if (keys.size() == 1) return Collections.singletonMap(keys.get(0), values.get(0));
         ListIterator<Object> it = values.listIterator();
         Map<String, Object> res = new LinkedHashMap<>(keys.size());
         for (String key : keys) {
-            res.put(key,it.next());
+            res.put(key, it.next());
         }
         return res;
     }
 
     public static Map<String, Object> mapFromPairs(List<List<Object>> pairs) {
         if (pairs.isEmpty()) return Collections.emptyMap();
-        Map<String,Object> map = new LinkedHashMap<>(pairs.size());
+        Map<String, Object> map = new LinkedHashMap<>(pairs.size());
         for (List<Object> pair : pairs) {
             if (pair.isEmpty()) continue;
             Object key = pair.get(0);
-            if (key==null) continue;
+            if (key == null) continue;
             Object value = pair.size() >= 2 ? pair.get(1) : null;
-            map.put(key.toString(),value);
+            map.put(key.toString(), value);
         }
         return map;
     }
@@ -604,8 +567,8 @@ public class Util {
         try {
             URL source = new URL(url);
             String file = source.getFile();
-            if (source.getRef() != null) file += "#"+source.getRef();
-            return new URL(source.getProtocol(),source.getHost(),source.getPort(),file).toString();
+            if (source.getRef() != null) file += "#" + source.getRef();
+            return new URL(source.getProtocol(), source.getHost(), source.getPort(), file).toString();
         } catch (MalformedURLException mfu) {
             return String.format("invalid URL (%s)", url);
         }
@@ -617,10 +580,11 @@ public class Util {
             return t;
         } catch (Exception e) {
             errors.incrementAndGet();
-            errorMessages.compute(e.getMessage(),(s, i) -> i == null ? 1 : i + 1);
+            errorMessages.compute(e.getMessage(), (s, i) -> i == null ? 1 : i + 1);
             return errorValue;
         }
     }
+
     public static <T> T getFutureOrCancel(Future<T> f, Map<String, Long> errorMessages, AtomicInteger errors, T errorValue) {
         try {
             if (f.isDone()) return f.get();
@@ -630,7 +594,7 @@ public class Util {
             }
         } catch (Exception e) {
             errors.incrementAndGet();
-            errorMessages.compute(e.getMessage(),(s, i) -> i == null ? 1 : i + 1);
+            errorMessages.compute(e.getMessage(), (s, i) -> i == null ? 1 : i + 1);
         }
         return errorValue;
     }
@@ -654,13 +618,14 @@ public class Util {
         if (!errors.isEmpty()) {
             log.bulk(l -> {
                 l.warn(message);
-                errors.forEach((k, v) -> l.warn("%d times: %s",v,k));
+                errors.forEach((k, v) -> l.warn("%d times: %s", v, k));
             });
         }
     }
 
     public static void checkAdmin(SecurityContext securityContext, ProcedureCallContext callContext, String procedureName) {
-        if (!securityContext.allowExecuteAdminProcedure(callContext.id())) throw new RuntimeException("This procedure "+ procedureName +" is only available to admin users");
+        if (!securityContext.allowExecuteAdminProcedure(callContext.id()))
+            throw new RuntimeException("This procedure " + procedureName + " is only available to admin users");
     }
 
     public static void sleep(int millis) {
@@ -680,21 +645,22 @@ public class Util {
     }
 
     public static String param(String var) {
-        return var.charAt(0) == '$' ? var : '$'+quote(var);
+        return var.charAt(0) == '$' ? var : '$' + quote(var);
     }
 
     public static String withMapping(Stream<String> columns, Function<String, String> withMapping) {
         String with = columns.map(withMapping).collect(Collectors.joining(","));
-        return with.isEmpty() ? with : " WITH "+with+" ";
+        return with.isEmpty() ? with : " WITH " + with + " ";
     }
 
     public static boolean isWriteableInstance(GraphDatabaseAPI db) {
         try {
             try {
                 Class hadb = Class.forName("org.neo4j.kernel.ha.HighlyAvailableGraphDatabase");
-                boolean isSlave = hadb.isInstance(db) && !((Boolean)hadb.getMethod("isMaster").invoke(db));
+                boolean isSlave = hadb.isInstance(db) && !((Boolean) hadb.getMethod("isMaster").invoke(db));
                 if (isSlave) return false;
-            } catch (ClassNotFoundException | IllegalAccessException | InvocationTargetException | NoSuchMethodException e) {
+            } catch (ClassNotFoundException | IllegalAccessException | InvocationTargetException |
+                     NoSuchMethodException e) {
                 /* ignore */
             }
 
@@ -702,7 +668,7 @@ public class Util {
                     Collections.singletonMap("databaseName", db.databaseName()),
                     result -> Iterators.single(result.columnAs("role")));
             return role.equalsIgnoreCase("LEADER");
-        } catch(QueryExecutionException e) {
+        } catch (QueryExecutionException e) {
             if (e.getStatusCode().equalsIgnoreCase("Neo.ClientError.Procedure.ProcedureNotFound")) return true;
             throw e;
         }
@@ -713,7 +679,6 @@ public class Util {
      *
      * @param db
      * @return
-     *
      */
     public static boolean transactionIsTerminated(TerminationGuard db) {
         try {
@@ -740,9 +705,9 @@ public class Util {
         }
     }
 
-    public static void close(Closeable closeable, Consumer<Exception> onErrror) {
+    public static void close(AutoCloseable closeable, Consumer<Exception> onErrror) {
         try {
-            if (closeable!=null) closeable.close();
+            if (closeable != null) closeable.close();
         } catch (Exception e) {
             // ignore
             if (onErrror != null) {
@@ -751,18 +716,19 @@ public class Util {
         }
     }
 
-    public static void close(Closeable closeable) {
+    public static void close(AutoCloseable closeable) {
         close(closeable, null);
     }
 
     public static boolean isNotNullOrEmpty(String s) {
-        return s!=null && s.trim().length()!=0;
-    }
-    public static boolean isNullOrEmpty(String s) {
-        return s==null || s.trim().length()==0;
+        return s != null && s.trim().length() != 0;
     }
 
-    public static Map<String, String> getRequestParameter(String parameters){
+    public static boolean isNullOrEmpty(String s) {
+        return s == null || s.trim().length() == 0;
+    }
+
+    public static Map<String, String> getRequestParameter(String parameters) {
         Map<String, String> params = null;
 
         if(Objects.nonNull(parameters)){
@@ -795,7 +761,7 @@ public class Util {
         }
     }
 
-    public static Optional<String> getLoadUrlByConfigFile(String loadType, String key, String suffix){
+    public static Optional<String> getLoadUrlByConfigFile(String loadType, String key, String suffix) {
         key = Optional.ofNullable(key)
                 .map(s ->
                         Stream.of("apoc", loadType, s, suffix).collect(Collectors.joining("."))
@@ -805,7 +771,7 @@ public class Util {
         return Optional.ofNullable(value);
     }
 
-    public static String dateFormat(TemporalAccessor value, String format){
+    public static String dateFormat(TemporalAccessor value, String format) {
         return getFormat(format).format(value);
     }
 
@@ -875,7 +841,7 @@ public class Util {
     }
 
     public static Node mergeNode(Transaction tx, Label primaryLabel, Label addtionalLabel,
-                                 Pair<String, Object>... pairs ) {
+                                 Pair<String, Object>... pairs) {
         Node node = Iterators.singleOrNull(tx.findNodes(primaryLabel, pairs[0].first(), pairs[0].other()).stream()
                 .filter(n -> addtionalLabel!=null && n.hasLabel(addtionalLabel))
                 .filter( n -> {
